@@ -1,0 +1,8 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- SSH folder icon -->
+  <rect x="10" y="30" width="108" height="70" rx="4" fill="#4FC3F7" stroke="#0288D1" stroke-width="2"/>
+  <path d="M10 40 Q10 30 20 30 L48 30 L52 38 L116 38 Q126 38 126 48 L126 100 Q126 110 116 100 L20 100 Q10 100 10 90 Z" fill="#81D4FA" stroke="#0288D1" stroke-width="2"/>
+  
+  <!-- Terminal symbol inside folder -->
+  <text x="64" y="75" font-size="40" font-weight="bold" fill="#01579B" text-anchor="middle" font-family="monospace">&gt;_</text>
+</svg>
