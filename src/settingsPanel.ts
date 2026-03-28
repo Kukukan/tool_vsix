@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { HuyfiveConfig } from './config';
 import { SSHFileManager } from './sshFileManager';
+import { BuildScriptTemplates } from './buildScriptTemplates';
 
 export class HuyfiveSettingsPanel {
   public static currentPanel: HuyfiveSettingsPanel | undefined;
@@ -69,7 +70,6 @@ export class HuyfiveSettingsPanel {
   private async _handleMessage(message: any) {
     switch (message.command) {
       case 'saveSettings':
-        await HuyfiveConfig.setRemotePath(message.remotePath);
         await HuyfiveConfig.setLocalDestination(message.localDestination);
         await HuyfiveConfig.setBashScriptPath(message.bashScriptPath);
         await HuyfiveConfig.setLocalAppPath(message.localAppPath);
@@ -82,13 +82,39 @@ export class HuyfiveSettingsPanel {
       case 'getSettings':
         this._sendSettings();
         break;
+      case 'refreshRemote':
+        const remoteInfo = SSHFileManager.getRemoteInfo();
+        if (remoteInfo) {
+          await HuyfiveConfig.setHost(remoteInfo.host);
+          await HuyfiveConfig.setPort(remoteInfo.port);
+          await HuyfiveConfig.setRepoPath(remoteInfo.repoPath);
+          this._update();
+          this._panel.webview.postMessage({ command: 'refreshComplete', success: true });
+        } else {
+          this._panel.webview.postMessage({ command: 'refreshComplete', success: false });
+        }
+        break;
+      case 'generateBuildScript':
+        const template = BuildScriptTemplates.getTemplate(message.templateKey);
+        if (template) {
+          await HuyfiveConfig.setBashScriptPath('build.sh');
+          this._panel.webview.postMessage({
+            command: 'scriptGenerated',
+            success: true,
+            scriptContent: template,
+            filename: 'build.sh'
+          });
+          this._update();
+        } else {
+          this._panel.webview.postMessage({ command: 'scriptGenerated', success: false });
+        }
+        break;
     }
   }
 
   private _sendSettings() {
     this._panel.webview.postMessage({
       command: 'settings',
-      remotePath: HuyfiveConfig.getRemotePath(),
       localDestination: HuyfiveConfig.getLocalDestination(),
       downloadHistory: HuyfiveConfig.getDownloadHistory(),
       bashScriptPath: HuyfiveConfig.getBashScriptPath(),
@@ -104,7 +130,6 @@ export class HuyfiveSettingsPanel {
   }
 
   private _getHtmlForWebview(): string {
-    const remotePath = HuyfiveConfig.getRemotePath();
     const localDestination = HuyfiveConfig.getLocalDestination();
     const downloadHistory = HuyfiveConfig.getDownloadHistory();
     const bashScriptPath = HuyfiveConfig.getBashScriptPath();
@@ -115,6 +140,10 @@ export class HuyfiveSettingsPanel {
 
     const historyItems = downloadHistory
       .map((path) => `<div class="history-item">${this._escapeHtml(path)}</div>`)
+      .join('');
+
+    const templateOptions = BuildScriptTemplates.getTemplateNames()
+      .map((t: { key: string; name: string }) => `<option value="${t.key}">${t.name}</option>`)
       .join('');
 
     return `<!DOCTYPE html>
@@ -149,6 +178,59 @@ export class HuyfiveSettingsPanel {
           padding: 15px;
           border-radius: 4px;
           border: 1px solid var(--vscode-input-border);
+        }
+        .setting-group.remote-group {
+          padding: 12px;
+          margin-bottom: 20px;
+          background: rgba(14, 99, 156, 0.15);
+          border: 1px solid #0e639c;
+        }
+        .remote-group-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 10px;
+        }
+        .remote-group-header h3 {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin: 0;
+          color: #0e639c;
+        }
+        .refresh-btn {
+          width: auto;
+          padding: 4px 8px;
+          font-size: 11px;
+          background: #0e639c;
+          border: none;
+          color: white;
+          border-radius: 3px;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+        .refresh-btn:hover {
+          background: #1177bb;
+        }
+        .remote-fields {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+        }
+        .remote-field-group {
+          display: flex;
+          flex-direction: column;
+        }
+        .remote-field-group label {
+          font-size: 11px;
+          font-weight: 500;
+          margin-bottom: 4px;
+          color: #858585;
+        }
+        .remote-field-group input {
+          padding: 6px 8px;
+          font-size: 12px;
         }
         .setting-group label {
           display: block;
@@ -232,6 +314,61 @@ export class HuyfiveSettingsPanel {
           border-left: 3px solid #4caf50;
         }
         .success-message.show { display: block; }
+        .script-generate-section {
+          padding: 15px;
+          background: rgba(76, 175, 80, 0.1);
+          border: 1px solid #4caf50;
+          border-radius: 4px;
+          margin-bottom: 20px;
+        }
+        .script-generate-section h3 {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 12px;
+          color: #4caf50;
+        }
+        .generate-controls {
+          display: flex;
+          gap: 8px;
+          align-items: flex-end;
+        }
+        .generate-controls > div {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+        }
+        .generate-controls label {
+          font-size: 12px;
+          font-weight: 500;
+          margin-bottom: 4px;
+          color: #858585;
+        }
+        .generate-controls select {
+          padding: 6px 8px;
+          font-size: 12px;
+          background: var(--vscode-input-background);
+          color: var(--vscode-input-foreground);
+          border: 1px solid var(--vscode-input-border);
+          border-radius: 3px;
+        }
+        .generate-controls button {
+          padding: 6px 12px;
+          font-size: 12px;
+          background: #4caf50;
+          border: none;
+        }
+        .generate-controls button:hover {
+          background: #45a049;
+        }
+        .generate-info {
+          margin-top: 10px;
+          padding: 8px 12px;
+          background: var(--vscode-input-background);
+          border-radius: 3px;
+          font-size: 11px;
+          color: #858585;
+        }
+
       </style>
     </head>
     <body>
@@ -239,25 +376,40 @@ export class HuyfiveSettingsPanel {
         <h1>⚙️ Huyfive Settings</h1>
         <div class="success-message" id="successMessage">✓ Settings saved successfully!</div>
         <form id="settingsForm">
-          <div class="setting-group">
-            <label for="host">SSH Host</label>
-            <input type="text" id="host" placeholder="example.com" value="${this._escapeHtml(host)}" />
-            <div class="setting-description">Remote SSH host (auto‑detected from current workspace)</div>
+          <div class="setting-group remote-group">
+            <div class="remote-group-header">
+              <h3>🔗 Remote Connection</h3>
+              <button type="button" class="refresh-btn" id="refreshBtn">🔄 Refresh</button>
+            </div>
+            <div class="remote-fields">
+              <div class="remote-field-group">
+                <label for="host">Host</label>
+                <input type="text" id="host" placeholder="example.com" value="${this._escapeHtml(host)}" />
+              </div>
+              <div class="remote-field-group">
+                <label for="port">Port</label>
+                <input type="text" id="port" placeholder="22" value="${this._escapeHtml(port)}" />
+              </div>
+            </div>
+            <div class="remote-field-group" style="margin-top: 8px;">
+              <label for="repoPath">Repository Path</label>
+              <input type="text" id="repoPath" placeholder="/home/user/project" value="${this._escapeHtml(repoPath)}" />
+            </div>
           </div>
-          <div class="setting-group">
-            <label for="port">SSH Port</label>
-            <input type="text" id="port" placeholder="22" value="${this._escapeHtml(port)}" />
-            <div class="setting-description">Remote SSH port (auto‑detected)</div>
-          </div>
-          <div class="setting-group">
-            <label for="repoPath">Remote Repository Path</label>
-            <input type="text" id="repoPath" placeholder="/home/user/project" value="${this._escapeHtml(repoPath)}" />
-            <div class="setting-description">Remote workspace path (auto‑detected)</div>
-          </div>
-          <div class="setting-group">
-            <label for="remotePath">Remote File Path</label>
-            <input type="text" id="remotePath" placeholder="/home/user" value="${this._escapeHtml(remotePath)}" />
-            <div class="setting-description">Default path for browsing files on the remote host</div>
+          <div class="script-generate-section">
+            <h3>⚡ Generate Build Script</h3>
+            <div class="generate-controls">
+              <div>
+                <label for="templateSelect">Template</label>
+                <select id="templateSelect">
+                  ${templateOptions}
+                </select>
+              </div>
+              <button type="button" id="generateBtn">Generate</button>
+            </div>
+            <div class="generate-info" id="generateInfo" style="display: none;">
+              ✓ Build script generated! Click "Save Settings" to confirm.
+            </div>
           </div>
           <div class="setting-group">
             <label for="localDestination">Local Destination</label>
@@ -292,7 +444,6 @@ export class HuyfiveSettingsPanel {
           e.preventDefault();
           vscode.postMessage({
             command: 'saveSettings',
-            remotePath: document.getElementById('remotePath').value,
             localDestination: document.getElementById('localDestination').value,
             bashScriptPath: document.getElementById('bashScriptPath').value,
             localAppPath: document.getElementById('localAppPath').value,
@@ -304,14 +455,59 @@ export class HuyfiveSettingsPanel {
           msg.classList.add('show');
           setTimeout(() => msg.classList.remove('show'), 2000);
         });
+
         document.getElementById('resetBtn').addEventListener('click', () => {
-          document.getElementById('remotePath').value = '/home';
           document.getElementById('localDestination').value = './downloads';
           document.getElementById('bashScriptPath').value = '';
           document.getElementById('localAppPath').value = '';
           document.getElementById('host').value = '';
           document.getElementById('port').value = '22';
           document.getElementById('repoPath').value = '';
+        });
+
+        document.getElementById('generateBtn').addEventListener('click', (e) => {
+          e.preventDefault();
+          const templateKey = document.getElementById('templateSelect').value;
+          const btn = document.getElementById('generateBtn');
+          btn.textContent = '⏳ Generating...';
+          btn.disabled = true;
+          vscode.postMessage({ command: 'generateBuildScript', templateKey });
+        });
+
+        document.getElementById('refreshBtn').addEventListener('click', (e) => {
+          e.preventDefault();
+          const btn = document.getElementById('refreshBtn');
+          const originalText = btn.textContent;
+          btn.textContent = '⏳ Detecting...';
+          btn.disabled = true;
+          vscode.postMessage({ command: 'refreshRemote' });
+        });
+
+        window.addEventListener('message', (event) => {
+          const message = event.data;
+          if (message.command === 'refreshComplete') {
+            const btn = document.getElementById('refreshBtn');
+            btn.disabled = false;
+            if (message.success) {
+              btn.textContent = '✓ Detected';
+              setTimeout(() => { btn.textContent = '🔄 Refresh'; }, 1500);
+            } else {
+              btn.textContent = '✗ Not Remote';
+              setTimeout(() => { btn.textContent = '🔄 Refresh'; }, 1500);
+            }
+          }
+          if (message.command === 'scriptGenerated') {
+            const btn = document.getElementById('generateBtn');
+            btn.disabled = false;
+            if (message.success) {
+              document.getElementById('bashScriptPath').value = message.filename;
+              document.getElementById('generateInfo').style.display = 'block';
+              btn.textContent = '✓ Generated';
+              setTimeout(() => { btn.textContent = 'Generate'; }, 1500);
+            } else {
+              btn.textContent = 'Generate';
+            }
+          }
         });
       </script>
     </body>

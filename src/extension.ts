@@ -106,7 +106,32 @@ export function activate(context: vscode.ExtensionContext) {
     HuyfiveSettingsPanel.createOrShow();
   });
 
-  context.subscriptions.push(listFilesDisposable, buildAndRunDisposable, openSettingsDisposable);
+  // Command: run custom command
+  const runCustomCommandDisposable = vscode.commands.registerCommand('huyfive.runCustomCommand', async () => {
+    try {
+      const command = await vscode.window.showInputBox({
+        prompt: 'Enter the command to execute',
+        validateInput: (value) => {
+          if (!value.trim()) return 'Command cannot be empty';
+          return undefined;
+        }
+      });
+      if (!command) return;
+
+      const terminal = vscode.window.createTerminal({
+        name: 'Huyfive Custom Command',
+        isTransient: true,
+        location: vscode.TerminalLocation.Panel,
+      });
+      terminal.sendText(command, true);
+      terminal.show();
+      vscode.window.showInformationMessage(`📟 Executing: ${command}`);
+    } catch (error: any) {
+      vscode.window.showErrorMessage(`Failed to run command: ${error.message}`);
+    }
+  });
+
+  context.subscriptions.push(listFilesDisposable, buildAndRunDisposable, openSettingsDisposable, runCustomCommandDisposable);
 }
 
 export function deactivate() {}
