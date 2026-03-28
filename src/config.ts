@@ -1,88 +1,78 @@
 import * as vscode from 'vscode';
 
 export class HuyfiveConfig {
-  private static CONFIG_SECTION = 'huyfive';
+  private static readonly CONFIG_SECTION = 'huyfive';
 
+  // --- Existing getters/setters (add yours) ---
   static getRemotePath(): string {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .get<string>('remotePath') || '';
+    return this.get<string>('remotePath', '');
   }
-
-  static setRemotePath(path: string): Thenable<void> {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .update('remotePath', path, vscode.ConfigurationTarget.Global);
+  static setRemotePath(value: string): Thenable<void> {
+    return this.set('remotePath', value);
   }
 
   static getLocalDestination(): string {
-    const dest = vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .get<string>('localDestination') || '';
-    
-    if (dest && !dest.startsWith('/') && !dest.match(/^[a-zA-Z]:/)) {
-      // Resolve relative paths to workspace root
-      const folders = vscode.workspace.workspaceFolders;
-      if (folders && folders.length > 0) {
-        return vscode.Uri.joinPath(folders[0].uri, dest).fsPath;
-      }
-    }
-    return dest;
+    return this.get<string>('localDestination', '');
   }
-
-  static setLocalDestination(path: string): Thenable<void> {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .update('localDestination', path, vscode.ConfigurationTarget.Global);
-  }
-
-  static getAutoDownloadEnabled(): boolean {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .get<boolean>('autoDownload') || false;
-  }
-
-  static getDownloadHistory(): string[] {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .get<string[]>('downloadHistory') || [];
-  }
-
-  static addToDownloadHistory(filePath: string): Thenable<void> {
-    const history = this.getDownloadHistory();
-    const updated = [filePath, ...history.filter(p => p !== filePath)].slice(0, 10); // Keep last 10
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .update('downloadHistory', updated, vscode.ConfigurationTarget.Global);
-  }
-
-  static clearDownloadHistory(): Thenable<void> {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .update('downloadHistory', [], vscode.ConfigurationTarget.Global);
+  static setLocalDestination(value: string): Thenable<void> {
+    return this.set('localDestination', value);
   }
 
   static getBashScriptPath(): string {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .get<string>('bashScriptPath') || 'build.sh';
+    return this.get<string>('bashScriptPath', '');
   }
-
-  static setBashScriptPath(path: string): Thenable<void> {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .update('bashScriptPath', path, vscode.ConfigurationTarget.Global);
+  static setBashScriptPath(value: string): Thenable<void> {
+    return this.set('bashScriptPath', value);
   }
 
   static getLocalAppPath(): string {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .get<string>('localAppPath') || '';
+    return this.get<string>('localAppPath', '');
+  }
+  static setLocalAppPath(value: string): Thenable<void> {
+    return this.set('localAppPath', value);
   }
 
-  static setLocalAppPath(path: string): Thenable<void> {
-    return vscode.workspace
-      .getConfiguration(this.CONFIG_SECTION)
-      .update('localAppPath', path, vscode.ConfigurationTarget.Global);
+  static getDownloadHistory(): string[] {
+    return this.get<string[]>('downloadHistory', []);
+  }
+  static async addToDownloadHistory(path: string): Promise<void> {
+    const history = this.getDownloadHistory();
+    if (!history.includes(path)) {
+      history.push(path);
+      await this.set('downloadHistory', history);
+    }
+  }
+
+  // --- New methods for host, port, repoPath ---
+  static getHost(): string {
+    return this.get<string>('host', '');
+  }
+  static setHost(value: string): Thenable<void> {
+    return this.set('host', value);
+  }
+
+  static getPort(): string {
+    return this.get<string>('port', '');
+  }
+  static setPort(value: string): Thenable<void> {
+    return this.set('port', value);
+  }
+
+  static getRepoPath(): string {
+    return this.get<string>('repoPath', '');
+  }
+  static setRepoPath(value: string): Thenable<void> {
+    return this.set('repoPath', value);
+  }
+
+  // --- Helpers ---
+  private static get<T>(key: string, defaultValue: T): T {
+    const config = vscode.workspace.getConfiguration(this.CONFIG_SECTION);
+    return config.get<T>(key, defaultValue);
+  }
+
+  private static async set<T>(key: string, value: T): Promise<void> {
+    const config = vscode.workspace.getConfiguration(this.CONFIG_SECTION);
+    await config.update(key, value, vscode.ConfigurationTarget.Global);
   }
 }

@@ -1,172 +1,78 @@
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
+import * as path from 'path';
+import { HuyfiveConfig } from './config';
 
 export class SSHFileManager {
-  /**
-   * Check if currently connected to a remote SSH host
-   */
-  static isConnectedToSSH(): boolean {
-    const remoteAuthority = vscode.env.remoteName;
-    return remoteAuthority ? remoteAuthority.includes('ssh-remote') : false;
+  // Detect if we are in a remote SSH workspace
+  public static isRemoteWorkspace(): boolean {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    return workspaceFolder?.uri.scheme === 'vscode-remote';
   }
 
-  /**
-   * Get the remote authority string
-   */
-  static getRemoteAuthority(): string | undefined {
-    return vscode.env.remoteName;
+  // Extract host, port, repo path from current remote workspace URI
+  public static getRemoteInfo(): { host: string; port: string; repoPath: string } | null {
+    if (!this.isRemoteWorkspace()) return null;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return null;
+
+    const uri = workspaceFolder.uri;
+    const authority = uri.authority;
+    // Authority format: 'ssh-remote+<host>:<port>' (port optional)
+    const match = authority.match(/^ssh-remote\+([^:]+)(?::(\d+))?$/);
+    if (match) {
+      const host = match[1] || '';
+      const port = match[2] || '22';
+      const repoPath = uri.path; // The remote path inside the workspace
+      return { host, port, repoPath };
+    }
+    return null;
   }
 
-  /**
-   * Parse SSH authority to get connection details
-   * Example: ssh-remote+user@host.com:22 -> { user: 'user', host: 'host.com', port: 22 }
-   */
-  static parseSSHAuthority(authority: string): { user: string; host: string; port: number } {
-    // Remove ssh-remote+ prefix
-    const connection = authority.replace('ssh-remote+', '');
-    
-    // Extract user@host:port
-    const match = connection.match(/^([^@]+)@([^:]+)(?::(\d+))?$/);
-    if (!match) {
-      throw new Error(`Invalid SSH authority format: ${authority}`);
-    }
-
-    const [, user, host, port] = match;
-    return {
-      user,
-      host,
-      port: port ? parseInt(port) : 22,
-    };
-  }
-
-  /**
-   * Copy a file from remote SSH host to local using SCP
-   */
-  static async copyFileFromRemote(remoteFilePath: string, localFileName?: string): Promise<vscode.Uri> {
-    const remoteAuthority = this.getRemoteAuthority();
-    if (!remoteAuthority) {
-      throw new Error('Not connected to a remote host');
-    }
-
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
-      throw new Error('No workspace folder open');
-    }
-
-    const destFolder = folders[0];
-    const fileName = localFileName || remoteFilePath.split('/').pop() || 'copied-file';
-    const destPath = vscode.Uri.joinPath(destFolder.uri, fileName);
-
+  // List files in a directory (remote or local)
+  public static async listDirectory(dirPath: string): Promise<[string, vscode.FileType][]> {
     try {
-      // Parse SSH connection details
-      const sshDetails = this.parseSSHAuthority(remoteAuthority);
-      const remoteSource = `${sshDetails.user}@${sshDetails.host}:${remoteFilePath}`;
-      
-      // Build SCP command
-      const scpCommand = `scp -P ${sshDetails.port} "${remoteSource}" "${destPath.fsPath}"`;
+      const uri = this._getUri(dirPath);
+      const entries = await vscode.workspace.fs.readDirectory(uri);
+      return entries;
+    } catch (error) {
+      throw new Error(`Failed to read directory: ${error}`);
+    }
+  }
 
-      // Execute SCP command
-      const { stderr } = await execAsync(scpCommand);
-      
-      if (stderr && !stderr.includes('warning')) {
-        throw new Error(`SCP error: ${stderr}`);
+  // Copy a file from remote to local destination (works for both remote and local sources)
+  public static async copyFileFromRemote(remoteFilePath: string, localFileName: string): Promise<void> {
+    const localDestination = HuyfiveConfig.getLocalDestination();
+    if (!localDestination) {
+      throw new Error('Local destination not configured');
+    }
+
+    // Ensure local directory exists
+    const localDirUri = vscode.Uri.file(localDestination);
+    try {
+      await vscode.workspace.fs.stat(localDirUri);
+    } catch {
+      await vscode.workspace.fs.createDirectory(localDirUri);
+    }
+
+    const sourceUri = this._getUri(remoteFilePath);
+    const targetUri = vscode.Uri.file(path.join(localDestination, localFileName));
+
+    await vscode.workspace.fs.copy(sourceUri, targetUri, { overwrite: true });
+  }
+
+  // Helper to create a URI that works for both remote and local paths
+  private static _getUri(path: string): vscode.Uri {
+    if (this.isRemoteWorkspace()) {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+        throw new Error('No workspace folder open');
       }
-
-      return destPath;
-    } catch (error) {
-      throw new Error(`Failed to copy file via SCP: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * List files in a remote directory using SSH
-   */
-  static async listRemoteDirectory(remoteDir: string): Promise<[string, vscode.FileType][]> {
-    const remoteAuthority = this.getRemoteAuthority();
-    if (!remoteAuthority) {
-      throw new Error('Not connected to a remote host');
-    }
-
-    try {
-      // Parse SSH connection details
-      const sshDetails = this.parseSSHAuthority(remoteAuthority);
-
-      // Build SSH command to list directory
-      const sshCommand = `ssh -p ${sshDetails.port} ${sshDetails.user}@${sshDetails.host} "ls -la ${remoteDir}"`;
-
-      const { stdout } = await execAsync(sshCommand);
-      
-      // Parse ls output to get file information
-      const lines = stdout.trim().split('\n').slice(1); // Skip header
-      const files: [string, vscode.FileType][] = [];
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        
-        const parts = line.split(/\s+/);
-        const isDirectory = parts[0].startsWith('d');
-        const fileName = parts.slice(8).join(' '); // Handle filenames with spaces
-
-        if (fileName && fileName !== '.' && fileName !== '..') {
-          const fileType = isDirectory ? vscode.FileType.Directory : vscode.FileType.File;
-          files.push([fileName, fileType]);
-        }
-      }
-
-      return files;
-    } catch (error) {
-      throw new Error(`Failed to list directory via SSH: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Read content from a remote file using SSH
-   */
-  static async readRemoteFile(remoteFilePath: string): Promise<string> {
-    const remoteAuthority = this.getRemoteAuthority();
-    if (!remoteAuthority) {
-      throw new Error('Not connected to a remote host');
-    }
-
-    try {
-      // Parse SSH connection details
-      const sshDetails = this.parseSSHAuthority(remoteAuthority);
-
-      // Build SSH command to read file
-      const sshCommand = `ssh -p ${sshDetails.port} ${sshDetails.user}@${sshDetails.host} "cat ${remoteFilePath}"`;
-
-      const { stdout } = await execAsync(sshCommand);
-      return stdout;
-    } catch (error) {
-      throw new Error(`Failed to read file via SSH: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Write content to a remote file using SSH (via echo piped to file)
-   */
-  static async writeRemoteFile(remoteFilePath: string, content: string): Promise<void> {
-    const remoteAuthority = this.getRemoteAuthority();
-    if (!remoteAuthority) {
-      throw new Error('Not connected to a remote host');
-    }
-
-    try {
-      // Parse SSH connection details
-      const sshDetails = this.parseSSHAuthority(remoteAuthority);
-
-      // Escape content for shell
-      const escapedContent = content.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-
-      // Build SSH command to write file
-      const sshCommand = `ssh -p ${sshDetails.port} ${sshDetails.user}@${sshDetails.host} "echo \\"${escapedContent}\\" > ${remoteFilePath}"`;
-
-      await execAsync(sshCommand);
-    } catch (error) {
-      throw new Error(`Failed to write file via SSH: ${error instanceof Error ? error.message : String(error)}`);
+      // Ensure the path is absolute; if not, it's relative to workspace root
+      const absolutePath = path.startsWith('/') ? path : `/${path}`;
+      return vscode.Uri.parse(`vscode-remote://${workspaceFolder.uri.authority}${absolutePath}`);
+    } else {
+      // Local workspace – treat path as local file path
+      return vscode.Uri.file(path);
     }
   }
 }
