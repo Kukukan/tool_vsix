@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+*.vsix
+node_modules
+out/**/*.map
+src/**
+**/*.ts
+.vscode
+tsconfig.json
+README.md
+CHANGELOG.md
+LICENSE
+CLAUDE.md

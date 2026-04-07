@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { HuyfiveConfig } from './config';
 import { SSHFileManager } from './sshFileManager';
-import { BuildScriptTemplates } from './buildScriptTemplates';
+import { ComPortManager } from './comPortManager';
 
 export class HuyfiveSettingsPanel {
   public static currentPanel: HuyfiveSettingsPanel | undefined;
@@ -71,12 +71,26 @@ export class HuyfiveSettingsPanel {
     switch (message.command) {
       case 'saveSettings':
         await HuyfiveConfig.setLocalDestination(message.localDestination);
-        await HuyfiveConfig.setBashScriptPath(message.bashScriptPath);
         await HuyfiveConfig.setLocalAppPath(message.localAppPath);
         await HuyfiveConfig.setHost(message.host);
         await HuyfiveConfig.setPort(message.port);
         await HuyfiveConfig.setRepoPath(message.repoPath);
-        vscode.window.showInformationMessage('Settings saved successfully!');
+        await HuyfiveConfig.setBuildMode(message.buildMode || 'user');
+        if (message.debugComPort) {
+          await HuyfiveConfig.setDebugComPort(message.debugComPort);
+        }
+        if (message.flashComPort) {
+          await HuyfiveConfig.setFlashComPort(message.flashComPort);
+        }
+
+        // Save configuration if name is provided
+        if (message.configName) {
+          await HuyfiveConfig.saveConfiguration(message.configName);
+          vscode.window.showInformationMessage(`✓ Configuration "${message.configName}" saved`);
+        } else {
+          vscode.window.showInformationMessage('Settings saved successfully!');
+        }
+
         this._update();
         break;
       case 'getSettings':
@@ -94,20 +108,38 @@ export class HuyfiveSettingsPanel {
           this._panel.webview.postMessage({ command: 'refreshComplete', success: false });
         }
         break;
-      case 'generateBuildScript':
-        const template = BuildScriptTemplates.getTemplate(message.templateKey);
-        if (template) {
-          await HuyfiveConfig.setBashScriptPath('build.sh');
-          this._panel.webview.postMessage({
-            command: 'scriptGenerated',
-            success: true,
-            scriptContent: template,
-            filename: 'build.sh'
-          });
-          this._update();
-        } else {
-          this._panel.webview.postMessage({ command: 'scriptGenerated', success: false });
+      case 'loadConfig':
+        const configToLoad = message.configName;
+        if (configToLoad) {
+          const success = await HuyfiveConfig.loadConfiguration(configToLoad);
+          if (success) {
+            this._update();
+            vscode.window.showInformationMessage(`✓ Configuration "${configToLoad}" loaded`);
+          } else {
+            vscode.window.showErrorMessage(`Failed to load configuration "${configToLoad}"`);
+          }
         }
+        break;
+      case 'deleteConfig':
+        const configToDelete = message.configName;
+        if (configToDelete) {
+          await HuyfiveConfig.deleteConfiguration(configToDelete);
+          this._update();
+          vscode.window.showInformationMessage(`✓ Configuration "${configToDelete}" deleted`);
+        }
+        break;
+      case 'getComPorts':
+        const ports = await ComPortManager.getAvailablePorts();
+        const portsForUI = ports.map(port => ({
+          path: port.path,
+          displayName: ComPortManager.formatPortForDisplay(port)
+        }));
+        this._panel.webview.postMessage({
+          command: 'comPortsReceived',
+          ports: portsForUI,
+          debugComPort: HuyfiveConfig.getDebugComPort(),
+          flashComPort: HuyfiveConfig.getFlashComPort()
+        });
         break;
     }
   }
@@ -117,11 +149,12 @@ export class HuyfiveSettingsPanel {
       command: 'settings',
       localDestination: HuyfiveConfig.getLocalDestination(),
       downloadHistory: HuyfiveConfig.getDownloadHistory(),
-      bashScriptPath: HuyfiveConfig.getBashScriptPath(),
       localAppPath: HuyfiveConfig.getLocalAppPath(),
       host: HuyfiveConfig.getHost(),
       port: HuyfiveConfig.getPort(),
       repoPath: HuyfiveConfig.getRepoPath(),
+      buildMode: HuyfiveConfig.getBuildMode(),
+      savedConfigurations: HuyfiveConfig.getSavedConfigurations(),
     });
   }
 
@@ -132,19 +165,29 @@ export class HuyfiveSettingsPanel {
   private _getHtmlForWebview(): string {
     const localDestination = HuyfiveConfig.getLocalDestination();
     const downloadHistory = HuyfiveConfig.getDownloadHistory();
-    const bashScriptPath = HuyfiveConfig.getBashScriptPath();
     const localAppPath = HuyfiveConfig.getLocalAppPath();
     const host = HuyfiveConfig.getHost();
     const port = HuyfiveConfig.getPort();
     const repoPath = HuyfiveConfig.getRepoPath();
+    const buildMode = HuyfiveConfig.getBuildMode() || 'user';
 
     const historyItems = downloadHistory
       .map((path) => `<div class="history-item">${this._escapeHtml(path)}</div>`)
       .join('');
 
-    const templateOptions = BuildScriptTemplates.getTemplateNames()
-      .map((t: { key: string; name: string }) => `<option value="${t.key}">${t.name}</option>`)
-      .join('');
+    const savedConfigs = HuyfiveConfig.getSavedConfigurations();
+    const configList = Object.keys(savedConfigs).length > 0
+      ? Object.keys(savedConfigs)
+          .sort((a, b) => new Date(savedConfigs[b].timestamp).getTime() - new Date(savedConfigs[a].timestamp).getTime())
+          .map(name => `<div class="config-item" data-config="${this._escapeHtml(name)}">
+            <span class="config-name">${this._escapeHtml(name)}</span>
+            <div class="config-actions">
+              <button class="config-btn load-btn" type="button">Load</button>
+              <button class="config-btn delete-btn" type="button">×</button>
+            </div>
+          </div>`)
+          .join('')
+      : '<div class="empty-config">No saved configurations yet</div>';
 
     return `<!DOCTYPE html>
     <html lang="en">
@@ -321,61 +364,168 @@ export class HuyfiveSettingsPanel {
           border-radius: 4px;
           margin-bottom: 20px;
         }
-        .script-generate-section h3 {
+        .build-mode-section {
+          padding: 15px;
+          background: rgba(31, 111, 235, 0.08);
+          border: 1px solid #1f6feb;
+          border-radius: 4px;
+          margin-bottom: 20px;
+        }
+        .build-mode-section h3 {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 12px;
-          color: #4caf50;
+          color: #1f6feb;
         }
-        .generate-controls {
-          display: flex;
+        .build-mode-selector {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
           gap: 8px;
-          align-items: flex-end;
         }
-        .generate-controls > div {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-        }
-        .generate-controls label {
+        .mode-option {
+          padding: 8px 12px;
+          border: 1px solid #1f6feb;
+          border-radius: 3px;
+          background: var(--vscode-input-background);
+          color: var(--vscode-input-foreground);
+          cursor: pointer;
           font-size: 12px;
-          font-weight: 500;
-          margin-bottom: 4px;
-          color: #858585;
+          text-align: center;
+          transition: all 0.2s;
         }
-        .generate-controls select {
-          padding: 6px 8px;
-          font-size: 12px;
+        .mode-option.active {
+          background: #1f6feb;
+          color: #ffffff;
+          border-color: #1f6feb;
+        }
+        .config-section {
+          padding: 15px;
+          background: rgba(201, 209, 217, 0.08);
+          border: 1px solid #c9d1d9;
+          border-radius: 4px;
+          margin-bottom: 20px;
+        }
+        .config-section input {
+          width: 100%;
+          padding: 8px 12px;
           background: var(--vscode-input-background);
           color: var(--vscode-input-foreground);
           border: 1px solid var(--vscode-input-border);
-          border-radius: 3px;
+          border-radius: 4px;
+          font-size: 13px;
         }
-        .generate-controls button {
-          padding: 6px 12px;
-          font-size: 12px;
-          background: #4caf50;
-          border: none;
+        .config-section input:focus {
+          outline: none;
+          border-color: #007acc;
+          box-shadow: 0 0 0 1px #007acc;
         }
-        .generate-controls button:hover {
-          background: #45a049;
+        .configs-section {
+          padding: 15px;
+          background: rgba(201, 209, 217, 0.08);
+          border: 1px solid #c9d1d9;
+          border-radius: 4px;
+          margin-bottom: 20px;
+          display: none;
         }
-        .generate-info {
-          margin-top: 10px;
-          padding: 8px 12px;
+        .configs-section.visible {
+          display: block;
+        }
+        .configs-section h3 {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 12px;
+          color: #c9d1d9;
+        }
+        .config-list {
+          max-height: 200px;
+          overflow-y: auto;
           background: var(--vscode-input-background);
           border-radius: 3px;
+          padding: 8px;
+        }
+        .config-item {
+          padding: 8px;
+          margin-bottom: 4px;
+          background: var(--vscode-editor-background);
+          border-radius: 3px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-size: 12px;
+          border-left: 2px solid #1f6feb;
+        }
+        .config-name {
+          flex: 1;
+          font-weight: 500;
+        }
+        .config-actions {
+          display: flex;
+          gap: 4px;
+        }
+        .config-btn {
+          padding: 4px 8px;
           font-size: 11px;
+          background: #1f6feb;
+          color: white;
+          border: none;
+          border-radius: 2px;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+        .config-btn:hover {
+          background: #388bfd;
+        }
+        .config-btn.delete-btn {
+          padding: 4px 6px;
+          font-weight: bold;
+          background: #da3633;
+        }
+        .config-btn.delete-btn:hover {
+          background: #f85149;
+        }
+        .empty-config {
           color: #858585;
+          font-size: 11px;
+          font-style: italic;
+          padding: 8px;
+          text-align: center;
+        }
+        .mode-fields {
+          margin-top: 12px;
+          display: none;
+        }
+        .mode-fields.visible {
+          display: block;
+        }
+        .mode-fields .setting-group {
+          margin-bottom: 12px;
+          background: var(--vscode-input-background);
+        }
+        .com-port-select {
+          width: 100%;
+          padding: 8px 12px;
+          background: var(--vscode-input-background);
+          color: var(--vscode-input-foreground);
+          border: 1px solid var(--vscode-input-border);
+          border-radius: 4px;
+          font-size: 13px;
+        }
+        .com-port-select:focus {
+          outline: none;
+          border-color: #007acc;
+          box-shadow: 0 0 0 1px #007acc;
         }
 
-      </style>
+</style>
     </head>
     <body>
       <div class="container">
         <h1>⚙️ Huyfive Settings</h1>
         <div class="success-message" id="successMessage">✓ Settings saved successfully!</div>
         <form id="settingsForm">
+          <div class="config-section">
+            <input type="text" id="configName" placeholder="Save configuration as..." />
+          </div>
           <div class="setting-group remote-group">
             <div class="remote-group-header">
               <h3>🔗 Remote Connection</h3>
@@ -396,41 +546,64 @@ export class HuyfiveSettingsPanel {
               <input type="text" id="repoPath" placeholder="/home/user/project" value="${this._escapeHtml(repoPath)}" />
             </div>
           </div>
-          <div class="script-generate-section">
-            <h3>⚡ Generate Build Script</h3>
-            <div class="generate-controls">
-              <div>
-                <label for="templateSelect">Template</label>
-                <select id="templateSelect">
-                  ${templateOptions}
-                </select>
+          <div class="build-mode-section">
+            <h3>🔧 Build Mode</h3>
+            <div class="build-mode-selector">
+              <button type="button" class="mode-option ${buildMode === 'flash' ? 'active' : ''}" data-mode="flash">
+                ⚡ Flash (COM)
+              </button>
+              <button type="button" class="mode-option ${buildMode === 'user' ? 'active' : ''}" data-mode="user">
+                👤 User Mode
+              </button>
+            </div>
+            <input type="hidden" id="buildMode" value="${buildMode}" />
+            <div class="mode-fields ${buildMode === 'flash' ? 'visible' : ''}" id="flashFields">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="setting-group">
+                  <label for="debugComPort">Debug COM Port</label>
+                  <select id="debugComPort" class="com-port-select">
+                    <option value="">-- Detecting ports --</option>
+                  </select>
+                  <div class="setting-description">COM port for debugging</div>
+                </div>
+                <div class="setting-group">
+                  <label for="flashComPort">Flash COM Port</label>
+                  <select id="flashComPort" class="com-port-select">
+                    <option value="">-- Detecting ports --</option>
+                  </select>
+                  <div class="setting-description">COM port for flashing</div>
+                </div>
               </div>
-              <button type="button" id="generateBtn">Generate</button>
+              <div class="setting-group">
+                <label for="localDestination">Local Destination</label>
+                <input type="text" id="localDestination" placeholder="./downloads" value="${this._escapeHtml(localDestination)}" />
+                <div class="setting-description">Local folder to save downloaded files</div>
+              </div>
             </div>
-            <div class="generate-info" id="generateInfo" style="display: none;">
-              ✓ Build script generated! Click "Save Settings" to confirm.
+            <div class="mode-fields ${buildMode === 'user' ? 'visible' : ''}" id="userFields">
+              <div class="setting-group">
+                <label for="localDestination">Local Destination</label>
+                <input type="text" id="localDestination" placeholder="./downloads" value="${this._escapeHtml(localDestination)}" />
+                <div class="setting-description">Local folder to save downloaded files</div>
+              </div>
+              <div class="setting-group">
+                <label for="localAppPath">Local Application Path</label>
+                <input type="text" id="localAppPath" placeholder="C:\\Program Files\\MyApp\\app.exe" value="${this._escapeHtml(localAppPath)}" />
+                <div class="setting-description">Application path to run locally after build</div>
+              </div>
             </div>
-          </div>
-          <div class="setting-group">
-            <label for="localDestination">Local Destination</label>
-            <input type="text" id="localDestination" placeholder="./downloads" value="${this._escapeHtml(localDestination)}" />
-            <div class="setting-description">Local folder to save downloaded files</div>
-          </div>
-          <div class="setting-group">
-            <label for="bashScriptPath">Remote Build Script</label>
-            <input type="text" id="bashScriptPath" placeholder="build.sh" value="${this._escapeHtml(bashScriptPath)}" />
-            <div class="setting-description">Bash script path or name to run on remote host</div>
-          </div>
-          <div class="setting-group">
-            <label for="localAppPath">Local Application Path</label>
-            <input type="text" id="localAppPath" placeholder="C:\\Program Files\\MyApp\\app.exe" value="${this._escapeHtml(localAppPath)}" />
-            <div class="setting-description">Application path to run locally after build</div>
           </div>
           <div class="buttons">
             <button type="submit">Save Settings</button>
-            <button type="button" class="secondary" id="resetBtn">Reset to Default</button>
+            <button type="button" class="secondary" id="configsBtn">📋 Show Configurations</button>
           </div>
         </form>
+        <div class="configs-section" id="configsSection">
+          <h3>💾 Saved Configurations</h3>
+          <div class="config-list">
+            ${configList}
+          </div>
+        </div>
         <div class="history-section">
           <h3>📋 Download History</h3>
           <div class="history-list">
@@ -440,38 +613,33 @@ export class HuyfiveSettingsPanel {
       </div>
       <script>
         const vscode = acquireVsCodeApi();
+        const state = vscode.getState() || {};
+        let configsSectionVisible = state.configsSectionVisible || false;
         document.getElementById('settingsForm').addEventListener('submit', (e) => {
           e.preventDefault();
           vscode.postMessage({
             command: 'saveSettings',
             localDestination: document.getElementById('localDestination').value,
-            bashScriptPath: document.getElementById('bashScriptPath').value,
-            localAppPath: document.getElementById('localAppPath').value,
+            localAppPath: document.getElementById('localAppPath').value || '',
             host: document.getElementById('host').value,
             port: document.getElementById('port').value,
             repoPath: document.getElementById('repoPath').value,
+            buildMode: document.getElementById('buildMode').value,
+            debugComPort: document.getElementById('debugComPort')?.value || '',
+            flashComPort: document.getElementById('flashComPort')?.value || '',
+            configName: document.getElementById('configName').value.trim() || null
           });
           const msg = document.getElementById('successMessage');
           msg.classList.add('show');
           setTimeout(() => msg.classList.remove('show'), 2000);
         });
 
-        document.getElementById('resetBtn').addEventListener('click', () => {
-          document.getElementById('localDestination').value = './downloads';
-          document.getElementById('bashScriptPath').value = '';
-          document.getElementById('localAppPath').value = '';
-          document.getElementById('host').value = '';
-          document.getElementById('port').value = '22';
-          document.getElementById('repoPath').value = '';
-        });
-
-        document.getElementById('generateBtn').addEventListener('click', (e) => {
+        document.getElementById('configsBtn').addEventListener('click', (e) => {
           e.preventDefault();
-          const templateKey = document.getElementById('templateSelect').value;
-          const btn = document.getElementById('generateBtn');
-          btn.textContent = '⏳ Generating...';
-          btn.disabled = true;
-          vscode.postMessage({ command: 'generateBuildScript', templateKey });
+          const configsSection = document.getElementById('configsSection');
+          configsSection.classList.toggle('visible');
+          configsSectionVisible = configsSection.classList.contains('visible');
+          vscode.setState({ configsSectionVisible });
         });
 
         document.getElementById('refreshBtn').addEventListener('click', (e) => {
@@ -496,19 +664,88 @@ export class HuyfiveSettingsPanel {
               setTimeout(() => { btn.textContent = '🔄 Refresh'; }, 1500);
             }
           }
-          if (message.command === 'scriptGenerated') {
-            const btn = document.getElementById('generateBtn');
-            btn.disabled = false;
-            if (message.success) {
-              document.getElementById('bashScriptPath').value = message.filename;
-              document.getElementById('generateInfo').style.display = 'block';
-              btn.textContent = '✓ Generated';
-              setTimeout(() => { btn.textContent = 'Generate'; }, 1500);
-            } else {
-              btn.textContent = 'Generate';
-            }
+          if (message.command === 'comPortsReceived') {
+            const debugComPortSelect = document.getElementById('debugComPort');
+            const flashComPortSelect = document.getElementById('flashComPort');
+
+            // Function to populate a COM port dropdown
+            const populateComPort = (selectElement, selectedValue) => {
+              selectElement.innerHTML = '';
+              if (message.ports && message.ports.length > 0) {
+                message.ports.forEach(port => {
+                  const option = document.createElement('option');
+                  option.value = port.path;
+                  option.textContent = port.displayName;
+                  selectElement.appendChild(option);
+                });
+                // Set previously selected port if available
+                if (selectedValue && document.querySelector('#' + selectElement.id + ' option[value="' + selectedValue + '"]')) {
+                  selectElement.value = selectedValue;
+                }
+              } else {
+                selectElement.innerHTML = '<option value="">-- No COM ports found --</option>';
+              }
+            };
+
+            populateComPort(debugComPortSelect, message.debugComPort);
+            populateComPort(flashComPortSelect, message.flashComPort);
           }
         });
+
+        // Build mode selector
+        document.querySelectorAll('.mode-option').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.querySelectorAll('.mode-option').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const mode = btn.dataset.mode;
+            document.getElementById('buildMode').value = mode;
+
+            // Show/hide mode-specific fields
+            document.getElementById('flashFields').classList.toggle('visible', mode === 'flash');
+            document.getElementById('userFields').classList.toggle('visible', mode === 'user');
+
+            // Request COM ports if Flash mode selected
+            if (mode === 'flash') {
+              vscode.postMessage({ command: 'getComPorts' });
+            }
+          });
+        });
+
+        // Load configuration buttons
+        document.querySelectorAll('.config-item').forEach(item => {
+          const configName = item.dataset.config;
+          const loadBtn = item.querySelector('.load-btn');
+          const deleteBtn = item.querySelector('.delete-btn');
+
+          if (loadBtn) {
+            loadBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              vscode.postMessage({ command: 'loadConfig', configName });
+            });
+          }
+
+          if (deleteBtn) {
+            deleteBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              vscode.postMessage({ command: 'deleteConfig', configName });
+            });
+          }
+        });
+
+        // Request COM ports if Flash mode is active on load
+        if (document.getElementById('buildMode').value === 'flash') {
+          vscode.postMessage({ command: 'getComPorts' });
+        }
+
+        // Restore configurations section visible state after update
+        if (configsSectionVisible) {
+          const configsSection = document.getElementById('configsSection');
+          if (configsSection) {
+            configsSection.classList.add('visible');
+          }
+        }
       </script>
     </body>
     </html>`;

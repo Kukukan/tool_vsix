@@ -5,8 +5,11 @@
   "version": "0.1.0",
   "publisher": "your-publisher-name",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.95.0"
   },
+  "workspaces": [
+    "ui"
+  ],
   "categories": [
     "Other"
   ],
@@ -100,6 +103,20 @@
           "type": "array",
           "default": [],
           "description": "History of downloaded paths."
+        },
+        "huyfive.buildMode": {
+          "type": "string",
+          "enum": [
+            "flash",
+            "user"
+          ],
+          "default": "user",
+          "description": "Build mode: flash (Flash+COM ports) or user (standard config)"
+        },
+        "huyfive.savedConfigurations": {
+          "type": "object",
+          "default": {},
+          "description": "Saved configuration profiles."
         }
       }
     }
@@ -108,11 +125,18 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext .ts",
     "package": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.74.0",
-    "@types/node": "16.x",
-    "typescript": "^4.9.4"
+    "@types/node": "18.x",
+    "@types/vscode": "^1.95.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "serialport": "^13.0.0"
   }
 }
